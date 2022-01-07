@@ -1,0 +1,9 @@
+{
+    "dependencies" :
+    [
+        [ "Comet",          "https://github.com/MarcelPiNacy/Comet.git" ],
+        [ "xxHash",         "https://github.com/Cyan4973/xxHash.git" ],
+        [ "utf8proc",       "https://github.com/JuliaStrings/utf8proc.git" ],
+        [ "flat_hash_map",  "https://github.com/skarupke/flat_hash_map.git" ]
+    ]
+}
