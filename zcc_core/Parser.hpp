@@ -18,7 +18,7 @@ namespace Zero
 		Tokenizer							tokenizer;
 		HashMap<string_view, IdentifierID>	identifiers;
 		uintptr								ptr_size;
-		TokenInfo							tmp_token;
+		TokenInfo							this_token;
 
 		Parser() = default;
 		explicit Parser(string_view text);
@@ -30,9 +30,9 @@ namespace Zero
 
 		void				Reset();
 
-		TokenInfo			PopToken();
+		TokenInfo			NextToken();
 
-		TokenInfo			PeekToken();
+		TokenInfo			ThisToken();
 
 		void				Accept();
 		
@@ -43,7 +43,7 @@ namespace Zero
 		{
 			using U = std::conditional_t<std::is_same_v<T, const char*>, string_view, T>; // Convert const char* to string_view.
 
-			auto [t, d] = PeekToken();
+			auto [t, d] = ThisToken();
 			Assert(t == type && U(data) == d.Get<U>(), message);
 		}
 
@@ -73,6 +73,8 @@ namespace Zero
 		DoWhile				ParseDoWhile();
 		Expression			ParseFor();
 		Scope				ParseScope();
+		Expression			ParseBracket();
+		vector<Expression>	ParseBracketContents();
 		Expression			ParseParenthesis();
 		Expression			ParseFunction(optional<UnqualifiedIdentifier> name = std::nullopt);
 		Expression			ParseByFactors(Expression lhs);
@@ -82,7 +84,7 @@ namespace Zero
 		template <typename T>
 		bool PopMany(std::tuple<TokenType, T*> first)
 		{
-			auto token = PeekToken();
+			auto token = ThisToken();
 			if (token.type != std::get<0>(first))
 				return false;
 			*std::get<1>(first) = token.data.Get<T>();
@@ -93,7 +95,7 @@ namespace Zero
 		template <typename T, typename F>
 		bool PopMany(std::tuple<TokenType, T*, F> first)
 		{
-			auto token = PeekToken();
+			auto token = ThisToken();
 			if (token.type != std::get<0>(first))
 				return false;
 			bool r = true;

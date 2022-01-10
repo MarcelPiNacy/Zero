@@ -179,7 +179,6 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="AST.hpp" />
-    <ClInclude Include="EvalEngine.h" />
     <ClInclude Include="Parser.hpp" />
     <ClInclude Include="Keyword.hpp" />
     <ClInclude Include="Operator.hpp" />
