@@ -4,14 +4,14 @@
 
 
 
-#define TYPE_HEADER(TYPE) using this_type = TYPE;																\
-	TYPE() = default;																							\
-	TYPE(const TYPE&) = default;																				\
-	TYPE& operator=(const TYPE&) = default;																		\
+#define TYPE_HEADER(TYPE) using this_type = TYPE; \
+	TYPE() = default; \
+	TYPE(const TYPE&) = default; \
+	TYPE& operator=(const TYPE&) = default; \
 	~TYPE() = default
 
-#define ALWAYS_EQUAL															\
-	constexpr bool operator==(const this_type& other) const { return true; }	\
+#define ALWAYS_EQUAL   \
+	constexpr bool operator==(const this_type& other) const { return true; } \
 	constexpr bool operator!=(const this_type& other) const { return false; }
 
 #define DEFAULT_EQUALITY	inline bool operator==(const this_type& other) const { return memcmp(this, &other, sizeof(this_type)) == 0; }
@@ -131,14 +131,14 @@ namespace Zero
 
 
 
-	struct UnqualifiedIdentifier :
+	struct Identifier :
 		Detail::CategoryWrapper<ExpressionCategory::Identifier>,
 		Detail::NoReturnType,
 		Detail::AlwaysConst
 	{
-		TYPE_HEADER(UnqualifiedIdentifier);
+		TYPE_HEADER(Identifier);
 
-		constexpr UnqualifiedIdentifier(IdentifierID id) :
+		constexpr Identifier(IdentifierID id) :
 			id(id)
 		{
 		}
@@ -146,9 +146,9 @@ namespace Zero
 		IdentifierID id;
 
 		Type GetType(Parser& parser) const;
-		uint64 GetHash() const;
+		HashT GetHash() const;
 
-		bool operator==(const UnqualifiedIdentifier& other) const;
+		bool operator==(const Identifier& other) const;
 		DEFAULT_INEQUALITY
 
 		template <typename F>
@@ -161,42 +161,6 @@ namespace Zero
 		void ForEachField(F&& fn) const
 		{
 			fn(id);
-		}
-
-	};
-
-
-
-	struct QualifiedIdentifier :
-		Detail::CategoryWrapper<ExpressionCategory::Identifier>,
-		Detail::NoReturnType,
-		Detail::AlwaysConst
-	{
-		TYPE_HEADER(QualifiedIdentifier);
-
-		inline QualifiedIdentifier(IdentifierID id) :
-			names({ id })
-		{
-		}
-
-		vector<IdentifierID> names;
-
-		Type	GetType(Parser& parser) const;
-		uint64	GetHash() const;
-
-		bool operator==(const QualifiedIdentifier& other) const;
-		DEFAULT_INEQUALITY
-
-		template <typename F>
-		void ForEachField(F&& fn)
-		{
-			fn(names);
-		}
-
-		template <typename F>
-		void ForEachField(F&& fn) const
-		{
-			fn(names);
 		}
 
 	};
@@ -211,7 +175,7 @@ namespace Zero
 		TYPE_HEADER(MetaType);
 		ALWAYS_EQUAL
 
-		static uint64 GetHash();
+		static HashT GetHash();
 	};
 
 
@@ -224,7 +188,7 @@ namespace Zero
 		TYPE_HEADER(Void);
 		ALWAYS_EQUAL
 
-		static uint64 GetHash();
+		static HashT GetHash();
 	};
 
 
@@ -237,7 +201,7 @@ namespace Zero
 		TYPE_HEADER(Nil);
 		ALWAYS_EQUAL
 
-		static uint64 GetHash();
+		static HashT GetHash();
 	};
 
 
@@ -250,7 +214,7 @@ namespace Zero
 		TYPE_HEADER(Bool);
 		ALWAYS_EQUAL
 
-		static uint64 GetHash();
+		static HashT GetHash();
 	};
 
 
@@ -272,7 +236,7 @@ namespace Zero
 
 		uint64 bits = DefaultBitWidth;
 
-		uint64 GetHash() const;
+		HashT GetHash() const;
 	};
 
 
@@ -294,7 +258,7 @@ namespace Zero
 		{
 		}
 
-		uint64 GetHash() const;
+		HashT GetHash() const;
 	};
 
 
@@ -316,7 +280,7 @@ namespace Zero
 		{
 		}
 
-		uint64 GetHash() const;
+		HashT GetHash() const;
 	};
 
 
@@ -333,7 +297,7 @@ namespace Zero
 		bool operator==(const Enum& other) const;
 		DEFAULT_INEQUALITY
 
-		uint64 GetHash() const;
+		HashT GetHash() const;
 		ScopedPtr<Enum> ToPtr();
 	};
 
@@ -351,7 +315,7 @@ namespace Zero
 		bool operator==(const Array& other) const;
 		DEFAULT_INEQUALITY
 
-		uint64 GetHash() const;
+		HashT GetHash() const;
 		ScopedPtr<Array> ToPtr();
 	};
 
@@ -368,8 +332,48 @@ namespace Zero
 		bool operator==(const Tuple& other) const;
 		DEFAULT_INEQUALITY
 
-		uint64 GetHash() const;
+		HashT GetHash() const;
 		ScopedPtr<Tuple> ToPtr();
+	};
+
+
+
+	struct Variant :
+		Detail::CategoryWrapper<ExpressionCategory::Type>,
+		Detail::NoReturnType
+	{
+		TYPE_HEADER(Variant);
+
+		ScopedPtr<Type> key;
+		vector<Type> types;
+
+		bool operator==(const Variant& other) const;
+		DEFAULT_INEQUALITY
+
+		HashT GetHash() const;
+		ScopedPtr<Variant> ToPtr();
+	};
+
+
+
+	struct Union :
+		Detail::CategoryWrapper<ExpressionCategory::Type>,
+		Detail::NoReturnType
+	{
+		TYPE_HEADER(Union);
+
+		vector<Declaration> fields;
+		HashMap<Operator, Declaration*> operators;
+		HashMap<IdentifierID, Declaration*> variables;
+		HashMap<IdentifierID, Declaration*> variables_static;
+		HashMap<IdentifierID, Declaration*> functions;
+		HashMap<IdentifierID, Declaration*> functions_static;
+
+		bool operator==(const Union& other) const;
+		DEFAULT_INEQUALITY
+
+		HashT GetHash() const;
+		ScopedPtr<Union> ToPtr();
 	};
 
 
@@ -390,7 +394,7 @@ namespace Zero
 		bool operator==(const Record& other) const;
 		DEFAULT_INEQUALITY
 
-		uint64 GetHash() const;
+		HashT GetHash() const;
 		ScopedPtr<Record> ToPtr();
 	};
 
@@ -408,7 +412,7 @@ namespace Zero
 		bool operator==(const FunctionType& other) const;
 		DEFAULT_INEQUALITY
 
-		uint64 GetHash() const;
+		HashT GetHash() const;
 		ScopedPtr<FunctionType> ToPtr();
 	};
 
@@ -421,7 +425,7 @@ namespace Zero
 
 	namespace Detail
 	{
-		using TypeBase = Variant<
+		using TypeBase = TaggedUnion<
 			MetaType,
 			Void, Nil, Bool, Int, UInt, Float,
 			ScopedPtr<Enum>,
@@ -455,9 +459,9 @@ namespace Zero
 		constexpr bool IsMetaType() const { return Is<MetaType>(); }
 		constexpr TypeCategory GetCategory() const { return (TypeCategory)this->ID(); }
 
-		Type					GetType(Parser& parser) const;
+		Type GetType(Parser& parser) const;
 		ScopedPtr<Type>			ToPtr();
-		uint64					GetHash() const;
+		HashT GetHash() const;
 	};
 
 
@@ -472,7 +476,7 @@ namespace Zero
 		TYPE_HEADER(NoOp);
 		ALWAYS_EQUAL
 
-		uint64					GetHash() const;
+		HashT GetHash() const;
 	};
 
 
@@ -488,7 +492,7 @@ namespace Zero
 
 		vector<Expression> modules;
 
-		uint64					GetHash() const;
+		HashT GetHash() const;
 	};
 
 
@@ -499,12 +503,13 @@ namespace Zero
 		Detail::AlwaysConst,
 		Detail::Untyped
 	{
+		Identifier name;
 		vector<Expression> elements;
 
 		TYPE_HEADER(Namespace);
 		ALWAYS_EQUAL
 
-		uint64					GetHash() const;
+		HashT GetHash() const;
 	};
 
 
@@ -516,10 +521,10 @@ namespace Zero
 		TYPE_HEADER(Declaration);
 
 		ScopedPtr<Expression> type;
-		UnqualifiedIdentifier name;
+		Identifier name;
 		ScopedPtr<Expression> init;
 
-		inline Declaration(ScopedPtr<Expression> type, UnqualifiedIdentifier name, ScopedPtr<Expression> init = nullptr) :
+		inline Declaration(ScopedPtr<Expression> type, Identifier name, ScopedPtr<Expression> init = nullptr) :
 			type(type), name(name), init(init)
 		{
 		}
@@ -527,9 +532,9 @@ namespace Zero
 		bool operator==(const Declaration& other) const;
 		DEFAULT_INEQUALITY
 
-		Type					GetType(Parser& parser) const;
-		bool					IsConst() const;
-		uint64					GetHash() const;
+		Type GetType(Parser& parser) const;
+		bool IsConst() const;
+		HashT GetHash() const;
 	};
 
 
@@ -552,8 +557,8 @@ namespace Zero
 		bool operator==(const Cast& other) const;
 		DEFAULT_INEQUALITY
 
-		bool					IsConst() const;
-		uint64					GetHash() const;
+		bool IsConst() const;
+		HashT GetHash() const;
 	};
 
 
@@ -575,8 +580,8 @@ namespace Zero
 		DEFAULT_EQUALITY
 		DEFAULT_INEQUALITY
 
-		Type					GetType(Parser& parser) const;
-		uint64					GetHash() const;
+		Type GetType(Parser& parser) const;
+		HashT GetHash() const;
 	};
 
 
@@ -592,8 +597,8 @@ namespace Zero
 		DEFAULT_EQUALITY
 		DEFAULT_INEQUALITY
 
-		Type					GetType(Parser& parser) const;
-		uint64					GetHash() const;
+		Type GetType(Parser& parser) const;
+		HashT GetHash() const;
 	};
 
 
@@ -608,15 +613,15 @@ namespace Zero
 		DEFAULT_EQUALITY
 		DEFAULT_INEQUALITY
 
-		int64 value;
+		uint64 value;
 
-		constexpr LiteralInt(int64 value) :
+		constexpr LiteralInt(uint64 value) :
 			value(value)
 		{
 		}
 
-		Type					GetType(Parser& parser) const;
-		uint64					GetHash() const;
+		Type GetType(Parser& parser) const;
+		HashT GetHash() const;
 	};
 
 
@@ -638,8 +643,8 @@ namespace Zero
 		{
 		}
 
-		Type					GetType(Parser& parser) const;
-		uint64					GetHash() const;
+		Type GetType(Parser& parser) const;
+		HashT GetHash() const;
 	};
 
 
@@ -661,8 +666,8 @@ namespace Zero
 		{
 		}
 
-		Type					GetType(Parser& parser) const;
-		uint64					GetHash() const;
+		Type GetType(Parser& parser) const;
+		HashT GetHash() const;
 	};
 
 
@@ -680,9 +685,9 @@ namespace Zero
 		bool operator==(const Function& other) const;
 		DEFAULT_INEQUALITY
 
-		bool					IsConst() const;
-		Type					GetType(Parser& parser) const;
-		uint64					GetHash() const;
+		bool IsConst() const;
+		Type GetType(Parser& parser) const;
+		HashT GetHash() const;
 	};
 
 
@@ -704,10 +709,10 @@ namespace Zero
 		bool operator==(const FunctionCall& other) const;
 		DEFAULT_INEQUALITY
 
-		bool					IsConst() const;
-		Type					GetType(Parser& parser) const;
+		bool IsConst() const;
+		Type GetType(Parser& parser) const;
 		std::pair<bool, Type>	InferReturnType(Parser& parser) const;
-		uint64					GetHash() const;
+		HashT GetHash() const;
 	};
 
 
@@ -719,13 +724,15 @@ namespace Zero
 		TYPE_HEADER(Scope);
 
 		vector<Expression> expressions;
+		vector<Expression> deferred;
+		HashMap<Identifier, Declaration*> declarations;
 
 		bool operator==(const Scope& other) const;
 		DEFAULT_INEQUALITY
 
-		bool					IsConst() const;
+		bool IsConst() const;
 		std::pair<bool, Type>	InferReturnType(Parser& parser) const;
-		uint64					GetHash() const;
+		HashT GetHash() const;
 	};
 
 
@@ -743,9 +750,9 @@ namespace Zero
 		bool operator==(const Branch& other) const;
 		DEFAULT_INEQUALITY
 
-		bool					IsConst() const;
+		bool IsConst() const;
 		std::pair<bool, Type>	InferReturnType(Parser& parser) const;
-		uint64					GetHash() const;
+		HashT GetHash() const;
 	};
 
 
@@ -763,9 +770,9 @@ namespace Zero
 		bool operator==(const Select& other) const;
 		DEFAULT_INEQUALITY
 
-		bool					IsConst() const;
+		bool IsConst() const;
 		std::pair<bool, Type>	InferReturnType(Parser& parser) const;
-		uint64					GetHash() const;
+		HashT GetHash() const;
 	};
 
 
@@ -782,9 +789,9 @@ namespace Zero
 		bool operator==(const While& other) const;
 		DEFAULT_INEQUALITY
 
-		bool					IsConst() const;
+		bool IsConst() const;
 		std::pair<bool, Type>	InferReturnType(Parser& parser) const;
-		uint64					GetHash() const;
+		HashT GetHash() const;
 	};
 
 
@@ -801,9 +808,9 @@ namespace Zero
 		bool operator==(const DoWhile& other) const;
 		DEFAULT_INEQUALITY
 
-		bool					IsConst() const;
+		bool IsConst() const;
 		std::pair<bool, Type>	InferReturnType(Parser& parser) const;
-		uint64					GetHash() const;
+		HashT GetHash() const;
 	};
 
 
@@ -822,9 +829,9 @@ namespace Zero
 		bool operator==(const For& other) const;
 		DEFAULT_INEQUALITY
 
-		bool					IsConst() const;
+		bool IsConst() const;
 		std::pair<bool, Type>	InferReturnType(Parser& parser) const;
-		uint64					GetHash() const;
+		HashT GetHash() const;
 	};
 
 
@@ -842,9 +849,9 @@ namespace Zero
 		bool operator==(const ForEach& other) const;
 		DEFAULT_INEQUALITY
 
-		bool					IsConst() const;
+		bool IsConst() const;
 		std::pair<bool, Type>	InferReturnType(Parser& parser) const;
-		uint64					GetHash() const;
+		HashT GetHash() const;
 	};
 
 
@@ -866,9 +873,9 @@ namespace Zero
 		bool operator==(const UnaryExpression& other) const;
 		DEFAULT_INEQUALITY
 
-		bool					IsConst() const;
-		Type					GetType(Parser& parser) const;
-		uint64					GetHash() const;
+		bool IsConst() const;
+		Type GetType(Parser& parser) const;
+		HashT GetHash() const;
 	};
 
 
@@ -891,9 +898,9 @@ namespace Zero
 		bool operator==(const BinaryExpression& other) const;
 		DEFAULT_INEQUALITY
 
-		bool					IsConst() const;
-		Type					GetType(Parser& parser) const;
-		uint64					GetHash() const;
+		bool IsConst() const;
+		Type GetType(Parser& parser) const;
+		HashT GetHash() const;
 	};
 
 
@@ -908,7 +915,7 @@ namespace Zero
 		TYPE_HEADER(Break);
 		ALWAYS_EQUAL
 
-		uint64					GetHash() const;
+		HashT GetHash() const;
 	};
 
 
@@ -923,7 +930,7 @@ namespace Zero
 		TYPE_HEADER(Continue);
 		ALWAYS_EQUAL
 
-		uint64					GetHash() const;
+		HashT GetHash() const;
 	};
 
 
@@ -945,8 +952,8 @@ namespace Zero
 		bool operator==(const Defer& other) const;
 		DEFAULT_INEQUALITY
 
-		bool					IsConst() const;
-		uint64					GetHash() const;
+		bool IsConst() const;
+		HashT GetHash() const;
 	};
 
 
@@ -967,9 +974,9 @@ namespace Zero
 		bool operator==(const Return& other) const;
 		DEFAULT_INEQUALITY
 
-		bool					IsConst() const;
+		bool IsConst() const;
 		std::pair<bool, Type>	InferReturnType(Parser& parser) const;
-		uint64					GetHash() const;
+		HashT GetHash() const;
 	};
 
 
@@ -990,9 +997,9 @@ namespace Zero
 		bool operator==(const Yield& other) const;
 		DEFAULT_INEQUALITY
 
-		bool					IsConst() const;
+		bool IsConst() const;
 		std::pair<bool, Type>	InferReturnType(Parser& parser) const;
-		uint64					GetHash() const;
+		HashT GetHash() const;
 	};
 
 
@@ -1007,7 +1014,7 @@ namespace Zero
 		TYPE_HEADER(Wildcard);
 		ALWAYS_EQUAL
 
-		uint64					GetHash() const;
+		HashT GetHash() const;
 	};
 
 
@@ -1030,7 +1037,7 @@ namespace Zero
 		bool operator==(const TraitsOf& other) const;
 		DEFAULT_INEQUALITY
 
-		uint64					GetHash() const;
+		HashT GetHash() const;
 	};
 
 
@@ -1048,8 +1055,8 @@ namespace Zero
 		bool operator==(const ConstructorCall& other) const;
 		DEFAULT_INEQUALITY
 
-		Type					GetType(Parser& parser) const;
-		uint64					GetHash() const;
+		Type GetType(Parser& parser) const;
+		HashT GetHash() const;
 	};
 
 
@@ -1067,19 +1074,18 @@ namespace Zero
 		bool operator==(const DestructorCall& other) const;
 		DEFAULT_INEQUALITY
 
-		uint64					GetHash() const;
+		HashT GetHash() const;
 	};
 
 
 
 	namespace Detail
 	{
-		using ExpressionBase = Variant<
+		using ExpressionBase = TaggedUnion<
 			Use,
 			Namespace,
 			NoOp,
-			UnqualifiedIdentifier,
-			QualifiedIdentifier,
+			Identifier,
 			Type,
 			Cast,
 			Function,
@@ -1118,10 +1124,10 @@ namespace Zero
 			Set<T>(std::forward<T>(value));
 		}
 
-		bool					IsConst() const;
-		Type					GetType(Parser& parser) const;
+		bool IsConst() const;
+		Type GetType(Parser& parser) const;
 		std::pair<bool, Type>	InferReturnType(Parser& parser) const;
-		uint64					GetHash() const;
+		HashT GetHash() const;
 		ScopedPtr<Expression>	ToPtr();
 
 		bool operator==(const Expression& other) const;

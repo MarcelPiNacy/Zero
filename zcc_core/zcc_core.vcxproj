@@ -179,6 +179,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="AST.hpp" />
+    <ClInclude Include="Module.h" />
     <ClInclude Include="Parser.hpp" />
     <ClInclude Include="Keyword.hpp" />
     <ClInclude Include="Operator.hpp" />

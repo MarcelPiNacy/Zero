@@ -5,8 +5,11 @@ namespace Zero
     Parser::Parser(string_view text) :
         tokenizer(text),
         identifiers(),
+        this_module(),
         ptr_size(sizeof(uintptr) * 8),
-        this_token{ TokenType::MaxEnum, {} }
+        this_token{ TokenType::MaxEnum, {} },
+        scopes(),
+        this_scope(nullptr)
     {
     }
 
@@ -14,9 +17,8 @@ namespace Zero
     {
         auto count = identifiers.size();
         auto& e = identifiers[name];
-        if (identifiers.size() == count)
-            return e;
-        e = (IdentifierID)count;
+        if (identifiers.size() != count)
+            e = (IdentifierID)count;
         return e;
     }
 
@@ -27,28 +29,22 @@ namespace Zero
         this_token.type = TokenType::MaxEnum;
     }
 
-    Parser::TokenInfo Parser::NextToken()
-    {
-        auto r = ThisToken();
-        Accept();
-        return r;
-    }
-
-    Parser::TokenInfo Parser::ThisToken()
-    {
-        if (this_token.type == TokenType::MaxEnum)
-            Accept();
-        return this_token;
-    }
-
     void Parser::Accept()
     {
         this_token.type = tokenizer.NextToken(this_token.data);
     }
 
+    bool Parser::Accept(TokenType type)
+    {
+        bool r = this_token.type == type;
+        if (r)
+            Accept();
+        return r;
+    }
+
     void Parser::Expect(TokenType type, string_view message)
     {
-        Assert(ThisToken().type == type, message);
+        Assert(this_token.type == type, message);
     }
 
     void Parser::Error(string_view message)
@@ -63,36 +59,129 @@ namespace Zero
             Error(message);
     }
 
-    void Parser::AcceptSemicolon()
+    void Parser::EnterScope(Scope* scope)
     {
-        if (ThisToken().type == TokenType::Semicolon)
+        this_scope = scope;
+        scopes.push_back(scope);
+    }
+
+    void Parser::LeaveScope()
+    {
+        assert(scopes.size() != 0);
+        scopes.pop_back();
+        this_scope = !scopes.empty() ? scopes.back() : nullptr;
+    }
+
+    void Parser::RegisterDeclaration(Declaration* declaration, bool local)
+    {
+        auto scope = local ? this_scope : &this_module.global_scope;
+        scope->declarations.insert({ declaration->name, declaration });
+    }
+
+    vector<Expression> Parser::ParseExpressionsUntil(TokenType terminator)
+    {
+        vector<Expression> r;
+        while (this_token.type != terminator)
+        {
+            r.push_back(Parse());
+            Accept(TokenType::Semicolon);
+        }
+        Accept();
+        return r;
+    }
+
+    vector<Expression> Parser::ParseExpressionsUntil(TokenType terminator, Expression::IndexT required_id)
+    {
+        vector<Expression> r;
+        while (this_token.type != terminator)
+        {
+            auto e = Parse();
+            Assert(e.ID() == required_id, "");
+            r.push_back(std::move(e));
+            Accept(TokenType::Semicolon);
+        }
+        Accept();
+        return r;
+    }
+
+    vector<Expression> Parser::ParseTokenSeparatedSequence(TokenType separator)
+    {
+        vector<Expression> r;
+        while (true)
+        {
+            r.push_back(Parse());
+            if (this_token.type != separator)
+                break;
             Accept();
+        }
+        return r;
+    }
+
+    vector<Expression> Parser::ParseTokenSeparatedSequence(TokenType separator, TokenType terminator)
+    {
+        vector<Expression> r;
+
+        if (this_token.type != terminator)
+        {
+            while (true)
+            {
+                r.push_back(Parse());
+                if (this_token.type == terminator)
+                    break;
+                ExpectAndAccept(separator, "");
+            }
+        }
+        Accept();
+        return r;
+    }
+
+    vector<Expression> Parser::ParseTokenSeparatedSequence(TokenType separator, TokenType terminator, Expression::IndexT required_id)
+    {
+        vector<Expression> r;
+
+        if (this_token.type == terminator)
+            return r;
+
+        while (true)
+        {
+            auto e = Parse();
+            Assert(e.ID() == required_id, "");
+            r.push_back(std::move(e));
+            if (this_token.type == terminator)
+            {
+                Accept();
+                return r;
+            }
+            ExpectAndAccept(separator, "");
+        }
+    }
+
+    Expression Parser::ParseControlFlowExpressionBody()
+    {
+        switch (this_token.type)
+        {
+        case TokenType::Keyword:
+            Assert(this_token.data.Get<Keyword>() == Keyword::Do, "");
+            Accept();
+            return Parse();
+        case TokenType::BraceLeft:
+            return Parse();
+        default:
+            Error("");
+        }
     }
 
     Expression Parser::ParseGenericRecord()
     {
-        vector<Expression> params;
-        while (ThisToken().type != TokenType::ParenRight)
-        {
-            params.push_back(Parse());
-            if (ThisToken().type == TokenType::Comma)
-                Accept();
-        }
         abort();
     }
 
-    Expression Parser::ParseRecord(optional<UnqualifiedIdentifier> name)
+    Expression Parser::ParseRecord(optional<Identifier> name)
     {
         Record r = {};
 
-        while (ThisToken().type != TokenType::BraceRight)
-        {
-            auto e = Parse();
-            Assert(e.Is<Declaration>(), "");
-            r.fields.push_back(e.Get<Declaration>());
-        }
-
-        Accept();
+        ExpectAndAccept(TokenType::BraceRight, "");
+        r.fields = CastExpressionList<Declaration>(ParseExpressionsUntil(TokenType::BraceRight, Expression::IDOf<Declaration>));
 
         if (!name.has_value())
             return Type(r.ToPtr());
@@ -106,7 +195,7 @@ namespace Zero
 
     uint64 Parser::ParseFundamentalTypeBits(uint64 default_value)
     {
-        auto e = ThisToken();
+        auto e = this_token;
         if (e.type != TokenType::ParenLeft)
             return default_value;
         Accept();
@@ -119,40 +208,42 @@ namespace Zero
     Use Parser::ParseByUse()
     {
         Use r = {};
-        do
-        {
-            r.modules.push_back(Parse());
-        } while (ThisToken().type == TokenType::Comma);
-        Accept();
+        r.modules = ParseTokenSeparatedSequence(TokenType::Comma);
+        Accept(TokenType::Semicolon);
         return r;
     }
 
     Namespace Parser::ParseByNamespace()
     {
         Namespace r = {};
-        while (ThisToken().type != TokenType::BraceRight)
-            r.elements.push_back(Parse());
+        Expect(TokenType::Identifier, "");
+        r.name = GetIdentifierID(this_token.data.Get<string_view>());
+        Accept();
+        ExpectAndAccept(TokenType::BraceLeft, "");
+        r.elements = ParseExpressionsUntil(TokenType::BraceRight);
         return r;
     }
 
     Expression Parser::ParseType()
     {
         Expression r;
-        optional<UnqualifiedIdentifier> name = std::nullopt;
-        if (ThisToken().type == TokenType::Identifier)
+        
+        optional<Identifier> name = std::nullopt;
+
+        if (this_token.type == TokenType::Identifier)
         {
-            name = GetIdentifierID(ThisToken().data.Get<string_view>());
+            name = GetIdentifierID(this_token.data.Get<string_view>());
             Accept();
         }
 
-        auto [type, data] = ThisToken();
+        auto [type, data] = this_token;
         switch (type)
         {
         case TokenType::Operator:
             Assert(data.Get<Operator>() == Operator::Assign, "");
             Accept();
             r = Declaration(Expression(Type(MetaType())).ToPtr(), name.value(), Expression(Parse().GetType(*this)).ToPtr());
-            AcceptSemicolon();
+            Accept(TokenType::Semicolon);
             break;
         case TokenType::BraceLeft:
             Accept();
@@ -163,8 +254,7 @@ namespace Zero
             r = ParseGenericRecord();
             break;
         default:
-            if (type == TokenType::Semicolon)
-                Accept();
+            Accept(TokenType::Semicolon);
             Assert(name.has_value(), "");
             r = Declaration(Expression(Type()).ToPtr(), name.value());
             break;
@@ -176,16 +266,15 @@ namespace Zero
     {
         Declaration r;
         Enum e;
-        Expect(TokenType::Identifier, "");
-        auto id = GetIdentifierID(NextToken().data.Get<string_view>());
-        r.name = id;
-        if (auto token = ThisToken(); token.type == TokenType::Colon)
+        ExpectAndAccept(TokenType::Identifier, "");
+        r.name = GetIdentifierID(this_token.data.Get<string_view>());
+        if (auto token = this_token; token.type == TokenType::Colon)
         {
             Accept();
             e.underlying_type = Parse().ToPtr();
         }
         ExpectAndAccept(TokenType::BraceLeft, "");
-        while (ThisToken().type != TokenType::BraceRight)
+        while (this_token.type != TokenType::BraceRight)
         {
             string_view name;
             Operator op = {};
@@ -195,80 +284,58 @@ namespace Zero
                 std::make_tuple(TokenType::Operator, &op, [](Operator o) { return o == Operator::Assign; })),
                 "");
 
-            id = GetIdentifierID(name);
-            e.values.insert(std::make_pair(id, Parse()));
+            e.values.insert(std::make_pair(GetIdentifierID(name), Parse()));
 
-            if (ThisToken().type == TokenType::Comma)
-                Accept();
+            Accept(TokenType::Comma);
         }
         Accept();
         r.init = Expression(Type(e.ToPtr())).ToPtr();
         return r;
     }
 
-    Expression Parser::ParseByType(Type type)
+    Expression Parser::ParseTypeDecl(Type type)
     {
         Declaration r = {};
         if (!type.IsEmpty())
             r.type = Expression(type).ToPtr();
-        auto token = ThisToken();
+        auto token = this_token;
         if (token.type != TokenType::Identifier)
             return type;
-        auto id = GetIdentifierID(token.data.Get<string_view>());
-        r.name = id;
+        r.name = GetIdentifierID(token.data.Get<string_view>());
         Accept();
-        if (auto [t, data] = ThisToken(); t == TokenType::Operator && data.Get<Operator>() == Operator::Assign)
+        if (auto [t, data] = this_token; t == TokenType::Operator && data.Get<Operator>() == Operator::Assign)
         {
             Accept();
             r.init = Parse().ToPtr();
         }
-        AcceptSemicolon();
+        Accept(TokenType::Semicolon);
         if (r.type == nullptr || r.type->IsEmpty())
             r.type = Expression(r.init->GetType(*this)).ToPtr();
         return r;
     }
 
-    Branch Parser::ParseIf()
+    Branch Parser::ParseBranch()
     {
         Branch r = {};
 
         r.condition = Parse().ToPtr();
-        
+        r.on_true = ParseControlFlowExpressionBody().ToPtr();
+
+        auto [type, data] = this_token;
+        if (type == TokenType::Keyword)
         {
-            auto [type, data] = ThisToken();
-            switch (type)
+            switch (data.Get<Keyword>())
             {
-            case TokenType::BraceLeft:
-                break;
-            case TokenType::Keyword:
-                Assert(data.Get<Keyword>() == Keyword::Do, "");
+            case Keyword::Elif:
                 Accept();
+                r.on_false = Expression(ParseBranch()).ToPtr();
+                break;
+            case Keyword::Else:
+                Accept();
+                r.on_false = Parse().ToPtr();
                 break;
             default:
-                Error("");
                 break;
-            }
-        }
-
-        r.on_true = Parse().ToPtr();
-
-        {
-            auto [type, data] = ThisToken();
-            if (type == TokenType::Keyword)
-            {
-                switch (data.Get<Keyword>())
-                {
-                case Keyword::Elif:
-                    Accept();
-                    r.on_false = Expression(ParseIf()).ToPtr();
-                    break;
-                case Keyword::Else:
-                    Accept();
-                    r.on_false = Parse().ToPtr();
-                    break;
-                default:
-                    break;
-                }
             }
         }
 
@@ -280,9 +347,9 @@ namespace Zero
         Select r = {};
         r.key = Parse().ToPtr();
         ExpectAndAccept(TokenType::BraceLeft, "");
-        while (ThisToken().type != TokenType::BraceRight)
+        while (this_token.type != TokenType::BraceRight)
         {
-            auto [type, data] = ThisToken();
+            auto [type, data] = this_token;
             Assert(type == TokenType::Keyword, "");
             switch (data.Get<Keyword>())
             {
@@ -312,20 +379,7 @@ namespace Zero
     {
         While r = {};
         r.condition = Parse().ToPtr();
-        auto [type, data] = ThisToken();
-        switch (type)
-        {
-        case TokenType::BraceLeft:
-            break;
-        case TokenType::Keyword:
-            Assert(data.Get<Keyword>() == Keyword::Do, "");
-            Accept();
-            break;
-        default:
-            Error("");
-            break;
-        }
-        r.body = Parse().ToPtr();
+        r.body = ParseControlFlowExpressionBody().ToPtr();
         return r;
     }
 
@@ -342,49 +396,22 @@ namespace Zero
     Expression Parser::ParseFor()
     {
         auto first = Parse();
-        if (ThisToken().type == TokenType::Colon)
+        if (this_token.type == TokenType::Colon)
         {
             Accept();
             ForEach r = {};
             r.iterator = first.ToPtr();
             r.collection = Parse().ToPtr();
-            auto [type, data] = ThisToken();
-            switch (type)
-            {
-            case TokenType::BraceLeft:
-                break;
-            case TokenType::Keyword:
-                Assert(data.Get<Keyword>() == Keyword::Do, "");
-                Accept();
-                break;
-            default:
-                Error("");
-                break;
-            }
-            r.body = Parse().ToPtr();
+            r.body = ParseControlFlowExpressionBody().ToPtr();
             return r;
         }
         else
         {
             For r = {};
             r.init = first.ToPtr();
-            AcceptSemicolon();
             r.condition = Parse().ToPtr();
             r.update = Parse().ToPtr();
-            auto [type, data] = ThisToken();
-            switch (type)
-            {
-            case TokenType::BraceLeft:
-                break;
-            case TokenType::Keyword:
-                Assert(data.Get<Keyword>() == Keyword::Do, "");
-                Accept();
-                break;
-            default:
-                Error("");
-                break;
-            }
-            r.body = Parse().ToPtr();
+            r.body = ParseControlFlowExpressionBody().ToPtr();
             return r;
         }
     }
@@ -392,12 +419,9 @@ namespace Zero
     Scope Parser::ParseScope()
     {
         Scope r = {};
-        while (ThisToken().type != TokenType::BraceRight)
-        {
-            Assert(ThisToken().type != TokenType::MaxEnum, "");
-            r.expressions.push_back(Parse());
-        }
-        Accept();
+        EnterScope(&r);
+        r.expressions = ParseExpressionsUntil(TokenType::BraceRight);
+        LeaveScope();
         return r;
     }
 
@@ -407,7 +431,8 @@ namespace Zero
         bool any_type = false;
         bool any_value = false;
 
-        auto contents = ParseBracketContents();
+        auto contents = ParseTokenSeparatedSequence(TokenType::Comma, TokenType::BracketRight);
+
         for (const auto& e : contents)
         {
             any_type = any_type || e.Is<Type>();
@@ -416,72 +441,17 @@ namespace Zero
 
         ExpectAndAccept(TokenType::BracketRight, "");
 
-        if (!any_value)
-        {
-            Tuple t;
-            for (size_t i = 0; i < contents.size(); i++)
-            {
+        Accept(TokenType::Semicolon);
 
-            }
-            Declaration d;
-            d.type = Expression(Type(t.ToPtr())).ToPtr();
-            auto token = ThisToken();
-            d.name = UnqualifiedIdentifier(GetIdentifierID(token.data.Get<string_view>()));
-            Accept();
-            if (ThisToken().type == TokenType::Operator && ThisToken().data.Get<Operator>() == Operator::Assign)
-            {
-                Accept();
-                d.init = Parse().ToPtr();
-            }
-            r = d;
-        }
-        else
-        {
-            r = Type(t.ToPtr());
-        }
-        
-        AcceptSemicolon();
-
-        return r;
-    }
-
-    vector<Expression> Parser::ParseBracketContents()
-    {
-        vector<Expression> r;
-        if (ThisToken().type != TokenType::BracketRight)
-        {
-            while (true)
-            {
-                auto e = Parse();
-                r.push_back(e.GetType(*this));
-                if (ThisToken().type == TokenType::BracketRight)
-                    break;
-                ExpectAndAccept(TokenType::Comma, "");
-            }
-        }
         return r;
     }
 
     Expression Parser::ParseParenthesis()
     {
         Function r = {};
-        vector<Expression> expressions;
+        auto expressions = ParseTokenSeparatedSequence(TokenType::Comma, TokenType::ParenRight);
 
-        if (ThisToken().type != TokenType::ParenRight)
-        {
-            while (true)
-            {
-                expressions.push_back(Parse());
-                if (ThisToken().type == TokenType::ParenRight)
-                    break;
-                ExpectAndAccept(TokenType::Comma, "");
-            }
-        }
-
-        Accept();
-
-        const auto type = ThisToken().type;
-        if (type != TokenType::Colon && type != TokenType::Arrow)
+        if (auto type = this_token.type; type != TokenType::Colon && type != TokenType::Arrow)
         {
             Assert(expressions.size() == 1, "");
             return expressions[0];
@@ -489,11 +459,8 @@ namespace Zero
 
         r.params = std::move(expressions);
 
-        if (ThisToken().type == TokenType::Arrow)
-        {
-            Accept();
+        if (Accept(TokenType::Arrow))
             r.return_type = Parse().ToPtr();
-        }
 
         ExpectAndAccept(TokenType::Colon, "");
 
@@ -515,33 +482,22 @@ namespace Zero
         return r;
     }
 
-    Expression Parser::ParseFunction(optional<UnqualifiedIdentifier> name)
+    Expression Parser::ParseFunction(optional<Identifier> name)
     {
         Function r = {};
-        vector<Expression> expressions;
-        if (ThisToken().type != TokenType::ParenRight)
-        {
-            while (true)
-            {
-                expressions.push_back(Parse());
-                if (ThisToken().type == TokenType::ParenRight)
-                    break;
-                ExpectAndAccept(TokenType::Comma, "");
-            }
-        }
-        Accept();
+
+        auto expressions = ParseTokenSeparatedSequence(TokenType::Comma, TokenType::ParenRight);
 
         r.params = std::move(expressions);
 
-        if (ThisToken().type == TokenType::Arrow)
+        if (this_token.type == TokenType::Arrow)
         {
             Accept();
             r.return_type = Parse().ToPtr();
         }
 
-        if (ThisToken().type != TokenType::Colon)
+        if (this_token.type != TokenType::Colon)
         {
-            Accept();
             Assert(name.has_value(), "");
             return FunctionCall(name.value(), std::move(r.params));
         }
@@ -572,13 +528,13 @@ namespace Zero
         return d;
     }
 
-    Expression Parser::ParseByFactors(Expression lhs)
+    Expression Parser::ParseFactors(Expression lhs)
     {
         Expression r;
-        switch (ThisToken().type)
+        switch (this_token.type)
         {
         case TokenType::Keyword:
-            if (ThisToken().data.Get<Keyword>() != Keyword::As)
+            if (this_token.data.Get<Keyword>() != Keyword::As)
             {
                 r = lhs;
             }
@@ -592,9 +548,10 @@ namespace Zero
         {
             Declaration d = {};
             d.type = lhs.ToPtr();
-            d.name = GetIdentifierID(ThisToken().data.Get<string_view>());
+            d.name = GetIdentifierID(this_token.data.Get<string_view>());
             Accept();
-            if (auto [type, data] = ThisToken(); type == TokenType::Operator && data.Get<Operator>() == Operator::Assign)
+            auto [type, data] = this_token;
+            if (type == TokenType::Operator && data.Get<Operator>() == Operator::Assign)
             {
                 Accept();
                 d.init = Parse().ToPtr();
@@ -608,15 +565,15 @@ namespace Zero
         }
         case TokenType::Operator:
         {
-            const auto op = ThisToken().data.Get<Operator>();
+            const auto op = this_token.data.Get<Operator>();
             Accept();
             r = BinaryExpression(lhs.ToPtr(), Parse().ToPtr(), op);
             break;
         }
         case TokenType::ParenLeft:
             Accept();
-            if (lhs.Is<UnqualifiedIdentifier>())
-                r = ParseFunction(lhs.Get<UnqualifiedIdentifier>()); // Might be a function declaration!
+            if (lhs.Is<Identifier>())
+                r = ParseFunction(lhs.Get<Identifier>()); // Might be a function declaration!
             else
                 r = lhs;
             break;
@@ -627,13 +584,16 @@ namespace Zero
             r = lhs;
             break;
         }
-        AcceptSemicolon();
+        Accept(TokenType::Semicolon);
         return r;
     }
 
     Expression Parser::Parse()
     {
-        auto [type, data] = NextToken();
+        Accept(TokenType::MaxEnum);
+
+        auto [type, data] = this_token;
+        Accept();
         switch (type)
         {
         case TokenType::Keyword:
@@ -648,25 +608,25 @@ namespace Zero
             case Keyword::Enum:
                 return ParseByEnum();
             case Keyword::True:
-                return ParseByFactors(LiteralBool(true));
+                return ParseFactors(LiteralBool(true));
             case Keyword::False:
-                return ParseByFactors(LiteralBool(false));
+                return ParseFactors(LiteralBool(false));
             case Keyword::Nil:
-                return ParseByFactors(LiteralNil());
+                return ParseFactors(LiteralNil());
             case Keyword::Void:
-                return ParseByType(Void());
+                return ParseTypeDecl(Void());
             case Keyword::Let:
-                return ParseByType(Type());
+                return ParseTypeDecl(Type());
             case Keyword::Bool:
-                return ParseByType(Bool());
+                return ParseTypeDecl(Bool());
             case Keyword::Int:
-                return ParseByType(Int(ParseFundamentalTypeBits(Int::DefaultBitWidth)));
+                return ParseTypeDecl(Int(ParseFundamentalTypeBits(Int::DefaultBitWidth)));
             case Keyword::UInt:
-                return ParseByType(UInt(ParseFundamentalTypeBits(UInt::DefaultBitWidth)));
+                return ParseTypeDecl(UInt(ParseFundamentalTypeBits(UInt::DefaultBitWidth)));
             case Keyword::Float:
-                return ParseByType(Float(ParseFundamentalTypeBits(Float::DefaultBitWidth)));
+                return ParseTypeDecl(Float(ParseFundamentalTypeBits(Float::DefaultBitWidth)));
             case Keyword::If:
-                return ParseIf();
+                return ParseBranch();
             case Keyword::Select:
                 return ParseSelect();
             case Keyword::Do:
@@ -690,14 +650,14 @@ namespace Zero
             }
             break;
         case TokenType::Identifier:
-            return ParseByFactors(UnqualifiedIdentifier(GetIdentifierID(data.Get<string_view>())));
+            return ParseFactors(Identifier(GetIdentifierID(data.Get<string_view>())));
         case TokenType::LiteralInt:
-            return ParseByFactors(LiteralInt(data.Get<int64>()));
+            return ParseFactors(LiteralInt(data.Get<uint64>()));
         case TokenType::LiteralReal:
-            return ParseByFactors(LiteralReal(data.Get<double>()));
+            return ParseFactors(LiteralReal(data.Get<double>()));
         case TokenType::Operator:
         {
-            const auto op = data.Get<Operator>();
+            auto op = data.Get<Operator>();
             switch (op)
             {
             case Operator::Add:
@@ -719,8 +679,6 @@ namespace Zero
             return ParseBracket();
         case TokenType::ParenLeft:
             return ParseParenthesis();
-        case TokenType::Dot:
-            break;
         case TokenType::Comma:
             abort();
         case TokenType::Colon:
@@ -737,16 +695,15 @@ namespace Zero
         Error("");
     }
 
-    vector<Expression> Parser::ParseFile()
+    Module Parser::ParseFile()
     {
-        vector<Expression> r;
         while (true)
         {
             auto e = Parse();
             if (e.IsEmpty())
                 break;
-            r.push_back(std::move(e));
+            this_module.global_scope.expressions.push_back(std::move(e));
         }
-        return r;
+        return this_module;
     }
 }

@@ -20,13 +20,18 @@ std::string ReadFile(const char* path)
 
 
 
+uint32_t Test(const char* path)
+{
+	auto text = ReadFile(path);
+	auto parser = Zero::Parser(text);
+	auto root = parser.ParseFile();
+	return 0;
+}
+
+
+
 int main(int argc, char** args)
 {
-	using namespace Zero;
-
-	auto text = ReadFile("../test.zs");
-	auto parser = Parser(text);
-	auto root = parser.ParseFile();
-
+	Test("ControlFlow.txt");
 	return 0;
 }

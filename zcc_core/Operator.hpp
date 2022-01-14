@@ -27,6 +27,8 @@ namespace Zero
 		CompareGT, CompareGE,
 		CompareTW,
 		BoolNot, BoolAnd, BoolOr,
+		MemberAccess,
+		TraitsAccess,
 		MaxEnum
 	};
 }

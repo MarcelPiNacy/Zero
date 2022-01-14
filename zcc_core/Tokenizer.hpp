@@ -16,21 +16,30 @@ namespace Zero
 		LiteralChar,
 		LiteralString,
 		Operator,
+
 		BraceLeft, BraceRight,
 		BracketLeft, BracketRight,
 		ParenLeft, ParenRight,
-		Dot, Comma, Colon, Semicolon,
+		Comma, Colon, Semicolon,
 		TraitsOf,
 		Address,
 		Arrow,
 		Wildcard,
-		NoOp,
+		Hash,
+
 		MaxEnum
 	};
 
-	using TokenData = Variant<
+	constexpr bool HasAssociatedData(TokenType type) noexcept
+	{
+		return (uint8)type <= (uint8)TokenType::Operator;
+	}
+
+
+
+	using TokenData = TaggedUnion<
 		Keyword, Operator,
-		bool, int64, uint64, double, char32_t,
+		bool, uint64, double, char32_t,
 		string_view>;
 
 	struct Tokenizer

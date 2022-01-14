@@ -20,6 +20,9 @@
 
 
 
+
+
+
 namespace Zero
 {
 	struct Parser;
@@ -36,6 +39,10 @@ namespace Zero
 	using int64 = int64_t;
 	using intptr = ptrdiff_t;
 
+	using HashT = uintptr;
+
+
+
 	using std::pair;
 	using std::atomic;
 	using std::vector;
@@ -45,7 +52,11 @@ namespace Zero
 	using std::string_view;
 	using std::optional;
 
+
+
 	enum class IdentifierID : uint64 {};
+
+
 
 	namespace Build
 	{
@@ -56,70 +67,70 @@ namespace Zero
 #endif
 	}
 
+
+
+	namespace OS
+	{
+		void*	Malloc(size_t size);
+		void	Free(void* ptr, size_t size);
+	}
+
+
+
 	namespace Detail
 	{
-		constexpr auto wellons_ctrl32 = std::make_tuple<uint8, uint32, uint8, uint32, uint8>(15, 0xd168aaad, 15, 0xaf723597, 15);
-		constexpr auto wellons_ctrl64 = std::make_tuple<uint8, uint64, uint8, uint64, uint8>(32, 0xd6e8feb86659fd93, 32, 0xd6e8feb86659fd93, 32);
+		template <typename T>
+		using XS3M2Tuple = std::tuple<uint8, uint8, uint8, T, T>;
+
+		template <typename T>
+		constexpr auto WellonsMixCtrl = std::is_same_v<T, uint32> ?
+			XS3M2Tuple<T>(15, 15, 15, 0xd168aaad, 0xaf723597) :
+			XS3M2Tuple<T>(32, 32, 32, 0xd6e8feb86659fd93, 0xd6e8feb86659fd93);
 	}
+
+
 
 	constexpr uint32 WellonsMix(uint32 x)
 	{
-		constexpr auto c = Detail::wellons_ctrl32;
-		x ^= x >> std::get<0>(c);
-		x *= std::get<1>(c);
-		x ^= x >> std::get<2>(c);
-		x *= std::get<3>(c);
-		x ^= x >> std::get<4>(c);
+		const auto [s0, s1, s2, k0, k1] = Detail::WellonsMixCtrl<uint32>;
+
+		x ^= x >> s0;
+		x *= k0;
+		x ^= x >> s1;
+		x *= k1;
+		x ^= x >> s2;
+
 		return x;
 	}
 
 	constexpr uint64 WellonsMix(uint64 x)
 	{
-		constexpr auto c = Detail::wellons_ctrl64;
-		x ^= x >> std::get<0>(c);
-		x *= std::get<1>(c);
-		x ^= x >> std::get<2>(c);
-		x *= std::get<3>(c);
-		x ^= x >> std::get<4>(c);
+		const auto [s0, s1, s2, k0, k1] = Detail::WellonsMixCtrl<uint64>;
+
+		x ^= x >> s0;
+		x *= k0;
+		x ^= x >> s1;
+		x *= k1;
+		x ^= x >> s2;
+
 		return x;
 	}
+
+
 
 	uint64						XXHash64(const void* data, uintptr size);
 	std::pair<uint64, uint64>	XXHash128(const void* data, uintptr size);
 
-	// Random constant that is XORed into every hash when built in debug mode.
-	constexpr uintptr HashMagic = []()
-	{
-		if constexpr (Build::IsDebug)
-		{
-			uint64 r = 0xcbf29ce484222325;
+	HashT						XXHash(const void* data, uintptr size);
 
-			constexpr char date[] = __DATE__ "-" __TIME__;
 
-			for (auto c : date)
-			{
-				auto n = (r ^ c) * 0x00000100000001B3;
-				auto d = c & 63;
-				r ^= (n << d) | (n >> d);
-			}
-
-			if constexpr (sizeof(uintptr) == 4)
-				r ^= (r >> 32);
-
-			return (uintptr)r;
-		}
-		else
-		{
-			return 0;
-		}
-	}();
 
 	template <typename T>
 	struct CustomHasher
 	{
 		auto operator()(const T& key) const
 		{
-			return XXHash64(&key, sizeof(T)) ^ HashMagic;
+			return XXHash(&key, sizeof(T));
 		}
 	};
 
@@ -128,7 +139,7 @@ namespace Zero
 	{
 		auto operator()(const string& key) const
 		{
-			return XXHash64(key.data(), key.size()) ^ HashMagic;
+			return XXHash(key.data(), key.size());
 		}
 	};
 
@@ -137,7 +148,7 @@ namespace Zero
 	{
 		auto operator()(const string_view& key) const
 		{
-			return XXHash64(key.data(), key.size()) ^ HashMagic;
+			return XXHash(key.data(), key.size());
 		}
 	};
 
@@ -148,27 +159,36 @@ namespace Zero
 		{
 			if constexpr (std::is_trivial_v<T>)
 			{
-				return XXHash64(key.data(), key.size() * sizeof(T)) ^ HashMagic;
+				return XXHash(key.data(), key.size() * sizeof(T));
 			}
 			else
 			{
 				uintptr r = 0;
 				for (auto& e : key)
 					r ^= CustomHasher<T>()(e);
-				return r ^ HashMagic;
+				return r;
 			}
 		}
 	};
 
+
+
 	template <typename K, typename V = void, typename H = CustomHasher<K>>
+#if 1
 	using HashMap = std::conditional_t<std::is_void_v<V>, ska::bytell_hash_set<K, H>, ska::bytell_hash_map<K, V, H>>;
-	//using HashMap = std::conditional_t<std::is_void_v<V>, std::unordered_set<K, H>, std::unordered_map<K, V, H>>;
+#else
+	using HashMap = std::conditional_t<std::is_void_v<V>, std::unordered_set<K, H>, std::unordered_map<K, V, H>>;
+#endif
+
+
 
 	template <uintmax_t K>
 	using MinUint =
 		std::conditional_t<K <= UINT8_MAX, uint8,
 		std::conditional_t<K <= UINT16_MAX, uint16,
 		std::conditional_t<K <= UINT32_MAX, uint32, uint64>>>;
+
+
 
 	namespace Detail
 	{
@@ -191,14 +211,18 @@ namespace Zero
 		};
 	}
 
+
+
 	template <typename T>
 	constexpr void Destruct(T& value)
 	{
 		value.~T();
 	}
 
+
+
 	template <typename... T>
-	struct Variant :
+	struct TaggedUnion :
 		private std::variant<std::monostate, T...>
 	{
 		using IndexT = MinUint<sizeof...(T)>;
@@ -207,39 +231,39 @@ namespace Zero
 		template <typename U>
 		static constexpr IndexT IDOf = Detail::VariantTypeFinder<U, 0, T...>::Index;
 
-		constexpr Variant() :
+		constexpr TaggedUnion() :
 			Base()
 		{
 		}
 		
-		Variant(const Variant& other) :
+		TaggedUnion(const TaggedUnion& other) :
 			Base(*(const Base*)&other)
 		{
 		}
 
-		Variant& operator=(const Variant& other)
+		TaggedUnion& operator=(const TaggedUnion& other)
 		{
-			this->~Variant();
-			new (this) Variant(other);
+			this->~TaggedUnion();
+			new (this) TaggedUnion(other);
 			return *this;
 		}
 
-		Variant(Variant&& other) noexcept :
+		TaggedUnion(TaggedUnion&& other) noexcept :
 			Base(std::move(*(Base*)&other))
 		{
 		}
 
-		Variant& operator=(Variant&& other) noexcept
+		TaggedUnion& operator=(TaggedUnion&& other) noexcept
 		{
-			this->~Variant();
-			new (this) Variant(std::move(other));
+			this->~TaggedUnion();
+			new (this) TaggedUnion(std::move(other));
 			return *this;
 		}
 
 		template <
 			typename U,
 			typename = std::enable_if_t<Detail::VariantTypeFinder<std::remove_reference_t<U>, 0, T...>::Index != sizeof...(T)>>
-		constexpr Variant(U&& value) :
+		constexpr TaggedUnion(U&& value) :
 			Base(std::forward<U>(value))
 		{
 		}
@@ -247,14 +271,14 @@ namespace Zero
 		template <
 			typename U,
 			typename = std::enable_if_t<Detail::VariantTypeFinder<std::remove_reference_t<U>, 0, T...>::Index != sizeof...(T)>>
-		Variant& operator=(U&& value)
+		TaggedUnion& operator=(U&& value)
 		{
-			this->~Variant();
-			new (this) Variant(std::forward<U>(value));
+			this->~TaggedUnion();
+			new (this) TaggedUnion(std::forward<U>(value));
 			return *this;
 		}
 
-		~Variant() = default;
+		~TaggedUnion() = default;
 
 		template <typename F>
 		void Visit(F&& fn)
@@ -333,64 +357,109 @@ namespace Zero
 
 
 
-	struct Expression;
-	struct Type;
-	struct Enum;
-	struct Array;
-	struct Tuple;
-	struct Record;
-	struct FunctionType;
+	template <typename T>
+	struct SimpleObjectPool
+	{
+		static constexpr size_t PageSizeHint = 4096;
+		static constexpr size_t BlockSize = 1U << 21;
+		static constexpr size_t BlockCapacity = BlockSize / sizeof(T);
+
+		struct alignas(T) Block
+		{
+			Block* next;
+			std::atomic_uint32_t bump;
+		};
+
+		struct Node
+		{
+			Node* next;
+		};
+
+		template <typename A, typename B = A>
+		struct MyPair
+		{
+			A first;
+			B second;
+		};
+
+		std::atomic<MyPair<Node*, size_t>> free;
+		std::atomic<MyPair<Block*, size_t>> head;
+
+		T* Acquire()
+		{
+			while (true)
+			{
+				auto prior = free.load(std::memory_order_acquire);
+				if (prior.first == nullptr)
+					break;
+				decltype(prior) desired = { prior.first->next, prior.second + 1 };
+				if (free.compare_exchange_weak(prior, desired, std::memory_order_acquire, std::memory_order_relaxed))
+					return (T*)prior.first;
+				//SPIN_WAIT
+			}
+
+			Block* prior_head = nullptr;
+			while (true)
+			{
+				auto i = head.load(std::memory_order_acquire).first;
+				if (i == prior_head)
+					break;
+				prior_head = i;
+				do
+				{
+					auto n = i->bump.fetch_add(1, std::memory_order_acquire);
+					if (n < BlockCapacity)
+						return (T*)i + n;
+					i->bump.fetch_sub(1, std::memory_order_relaxed);
+					i = i->next;
+				} while (i != nullptr);
+			}
+
+			auto new_head = (Block*)OS::Malloc(BlockSize);
+			assert(new_head != nullptr);
+			new (&new_head->bump) std::atomic_uint32_t(2);
+			while (true)
+			{
+				auto prior = head.load(std::memory_order_acquire);
+				new_head->next = prior.first;
+				decltype(prior) desired = { new_head, prior.second + 1 };
+				if (head.compare_exchange_weak(prior, desired, std::memory_order_release, std::memory_order_relaxed))
+					return (T*)new_head + 1;
+				//SPIN_WAIT
+			}
+		}
+
+		void Release(T* e)
+		{
+			auto n = (Node*)e;
+			while (true)
+			{
+				auto prior = free.load(std::memory_order_acquire);
+				n->next = prior.first;
+				decltype(prior) desired = { n, prior.second + 1 };
+				if (free.compare_exchange_weak(prior, desired, std::memory_order_release, std::memory_order_relaxed))
+					break;
+				//SPIN_WAIT
+			}
+		}
+	};
+
+
 
 	template <typename T>
-	struct ScopedPtrTraits;
-
-	template <>
-	struct ScopedPtrTraits<Expression>
+	struct ScopedPtrTraits
 	{
-		static Expression* New();
-		static void Delete(Expression* ptr);
-	};
+		inline static SimpleObjectPool<T> allocator;
 
-	template <>
-	struct ScopedPtrTraits<Enum>
-	{
-		static Enum* New();
-		static void Delete(Enum* ptr);
-	};
+		static T* New()
+		{
+			return allocator.Acquire();
+		}
 
-	template <>
-	struct ScopedPtrTraits<Array>
-	{
-		static Array* New();
-		static void Delete(Array* ptr);
-	};
-
-	template <>
-	struct ScopedPtrTraits<Tuple>
-	{
-		static Tuple* New();
-		static void Delete(Tuple* ptr);
-	};
-
-	template <>
-	struct ScopedPtrTraits<Record>
-	{
-		static Record* New();
-		static void Delete(Record* ptr);
-	};
-
-	template <>
-	struct ScopedPtrTraits<FunctionType>
-	{
-		static FunctionType* New();
-		static void Delete(FunctionType* ptr);
-	};
-
-	template <>
-	struct ScopedPtrTraits<Type>
-	{
-		static Type* New();
-		static void Delete(Type* ptr);
+		static void Release(T* ptr)
+		{
+			allocator.Release(ptr);
+		}
 	};
 
 
@@ -441,7 +510,7 @@ namespace Zero
 		{
 			if (ptr != nullptr)
 			{
-				Traits::Delete(ptr);
+				Traits::Release(ptr);
 				ptr = nullptr;
 			}
 		}
@@ -485,6 +554,14 @@ namespace Zero
 		{
 			return *ptr;
 		}
+
+		template <typename... U>
+		static auto New(U&&... params)
+		{
+			auto r = Traits::New();
+			new (r) T(std::forward<U>(params)...);
+			return ScopedPtr<T>(r);
+		}
 	};
 
 
@@ -518,7 +595,12 @@ namespace Zero
 		{
 		}
 
-		constexpr Range(vector<T>& elements)
+		constexpr Range(vector<T>&& elements)
+			: begin_it(elements.data()), end_it(elements.data() + elements.size())
+		{
+		}
+
+		constexpr Range(const vector<T>& elements)
 			: begin_it(elements.data()), end_it(elements.data() + elements.size())
 		{
 		}

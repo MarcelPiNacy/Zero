@@ -1,126 +1,6 @@
 #include "AST.hpp"
 #include "Parser.hpp"
 
-#ifdef _WIN32
-#include <Windows.h>
-#define SPIN_WAIT YieldProcessor()
-#else
-#include <sys/mman.h>
-#define SPIN_WAIT
-#endif
-
-
-
-#if 1
-template <typename T>
-struct ASTSharedAllocator
-{
-    static constexpr size_t PageSizeHint = 4096;
-    static constexpr size_t BlockSize = 1U << 21;
-    static constexpr size_t BlockCapacity = BlockSize / sizeof(T);
-
-    struct alignas(T) Block
-    {
-        Block* next;
-        std::atomic_uint32_t bump;
-    };
-
-    struct Node
-    {
-        Node* next;
-    };
-
-    template <typename A, typename B = A>
-    struct MyPair
-    {
-        A first;
-        B second;
-    };
-
-    std::atomic<MyPair<Node*, size_t>> free;
-    std::atomic<MyPair<Block*, size_t>> head;
-
-#ifdef _WIN32
-    static void* OSMalloc(size_t size)
-    {
-        return VirtualAlloc(NULL, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-    }
-#endif
-
-    T* New()
-    {
-        while (true)
-        {
-            auto prior = free.load(std::memory_order_acquire);
-            if (prior.first == nullptr)
-                break;
-            decltype(prior) desired = { prior.first->next, prior.second + 1 };
-            if (free.compare_exchange_weak(prior, desired, std::memory_order_acquire, std::memory_order_relaxed))
-                return (T*)prior.first;
-            SPIN_WAIT;
-        }
-
-        Block* prior_head = nullptr;
-        while (true)
-        {
-            auto i = head.load(std::memory_order_acquire).first;
-            if (i == prior_head)
-                break;
-            prior_head = i;
-            do
-            {
-                auto n = i->bump.fetch_add(1, std::memory_order_acquire);
-                if (n < BlockCapacity)
-                    return (T*)i + n;
-                i->bump.fetch_sub(1, std::memory_order_relaxed);
-                i = i->next;
-            } while (i != nullptr);
-        }
-
-        auto new_head = (Block*)OSMalloc(BlockSize);
-        assert(new_head != nullptr);
-        new (&new_head->bump) std::atomic_uint32_t(2);
-        while (true)
-        {
-            auto prior = head.load(std::memory_order_acquire);
-            new_head->next = prior.first;
-            decltype(prior) desired = { new_head, prior.second + 1 };
-            if (head.compare_exchange_weak(prior, desired, std::memory_order_release, std::memory_order_relaxed))
-                return (T*)new_head + 1;
-            SPIN_WAIT;
-        }
-    }
-
-    void Delete(T* e)
-    {
-        auto n = (Node*)e;
-        while (true)
-        {
-            auto prior = free.load(std::memory_order_acquire);
-            n->next = prior.first;
-            decltype(prior) desired = { n, prior.second + 1 };
-            if (free.compare_exchange_weak(prior, desired, std::memory_order_release, std::memory_order_relaxed))
-                break;
-            SPIN_WAIT;
-        }
-    }
-};
-#else
-template <typename T>
-struct ASTSharedAllocator
-{
-    T* New()
-    {
-        return new T();
-    }
-
-    void Delete(T* e)
-    {
-        delete e;
-    }
-};
-#endif
-
 
 
 namespace Zero
@@ -137,92 +17,76 @@ namespace Zero
             abort();
         }
 
-        uint64 ExpressionHasher::operator()(const Expression& e) const
+        HashT ExpressionHasher::operator()(const Expression& e) const
         {
             return e.GetHash();
+        }
+
+        template <bool V>
+        struct Result
+        {
+            static constexpr bool Value = V;
+        };
+
+        template <typename T>
+        struct IsScopedPtr :                    Result<false> { };
+
+        template <typename T, typename U>
+        struct IsScopedPtr<ScopedPtr<T, U>> :   Result<true> { };
+        
+        template <typename T>
+        struct IsVector :                       Result<false> { };
+
+        template <typename T, typename U>
+        struct IsVector<vector<T, U>> :         Result<true> { };
+
+        // Please don't ask me what this does, I don't want to know:
+
+        template<typename T, typename F>
+        constexpr auto HasMember(F&& f) -> decltype(f(std::declval<T>()), true)
+        {
+            return true;
+        }
+
+        template <typename>
+        constexpr bool HasMember(...)
+        {
+            return false;
         }
     }
 
 
 
-    static ASTSharedAllocator<Expression> expression_allocator;
-    static ASTSharedAllocator<Enum> enum_allocator;
-    static ASTSharedAllocator<Array> array_allocator;
-    static ASTSharedAllocator<Tuple> tuple_allocator;
-    static ASTSharedAllocator<Record> record_allocator;
-    static ASTSharedAllocator<FunctionType> function_type_allocator;
-    static ASTSharedAllocator<Type> type_allocator;
-
-
-
-    Expression* ScopedPtrTraits<Expression>::New()
+    template <typename T>
+    static HashT HashAll(T&& value)
     {
-        return expression_allocator.New();
+        using V = std::remove_const_t<std::remove_reference_t<T>>;
+
+        if constexpr (Detail::IsScopedPtr<V>::Value)
+        {
+            return value->GetHash();
+        }
+        else if constexpr (std::is_pointer_v<V>)
+        {
+            return value->GetHash();
+        }
+        else if constexpr (Detail::IsVector<V>::Value)
+        {
+            HashT r = 0;
+            for (auto& e : value)
+                r ^= HashAll(e);
+            return r;
+        }
+        else
+        {
+            return value.GetHash();
+        }
     }
 
-    void ScopedPtrTraits<Expression>::Delete(Expression* e)
+    template <typename T, typename... U>
+    static HashT HashAll(T&& first, U&&... rest)
     {
-        expression_allocator.Delete(e);
-    }
-
-    Enum* ScopedPtrTraits<Enum>::New()
-    {
-        return  enum_allocator.New();
-    }
-
-    void ScopedPtrTraits<Enum>::Delete(Enum* e)
-    {
-        enum_allocator.Delete(e);
-    }
-
-    Array* ScopedPtrTraits<Array>::New()
-    {
-        return  array_allocator.New();
-    }
-
-    void ScopedPtrTraits<Array>::Delete(Array* e)
-    {
-        array_allocator.Delete(e);
-    }
-
-    Tuple* ScopedPtrTraits<Tuple>::New()
-    {
-        return tuple_allocator.New();
-    }
-
-    void ScopedPtrTraits<Tuple>::Delete(Tuple* e)
-    {
-        tuple_allocator.Delete(e);
-    }
-
-    Record* ScopedPtrTraits<Record>::New()
-    {
-        return record_allocator.New();
-    }
-
-    void ScopedPtrTraits<Record>::Delete(Record* e)
-    {
-        record_allocator.Delete(e);
-    }
-
-    Type* ScopedPtrTraits<Type>::New()
-    {
-        return type_allocator.New();
-    }
-
-    void ScopedPtrTraits<Type>::Delete(Type* e)
-    {
-        type_allocator.Delete(e);
-    }
-
-    FunctionType* ScopedPtrTraits<FunctionType>::New()
-    {
-        return function_type_allocator.New();
-    }
-
-    void ScopedPtrTraits<FunctionType>::Delete(FunctionType* e)
-    {
-        function_type_allocator.Delete(e);
+        return HashAll(first) ^ HashAll(std::forward<U>(rest)...);
     }
 
 
@@ -242,12 +106,9 @@ namespace Zero
         return type->IsConst() && name.IsConst() && init->IsConst();
     }
 
-    uint64 Declaration::GetHash() const
+    HashT Declaration::GetHash() const
     {
-        auto r = type->GetHash();
-        r ^= name.GetHash();
-        r ^= init->GetHash();
-        return r;
+        return HashAll(type, name, init);
     }
 
     bool Expression::IsConst() const
@@ -282,9 +143,7 @@ namespace Zero
 
     ScopedPtr<Expression> Expression::ToPtr()
     {
-        auto ptr = expression_allocator.New();
-        new (ptr) Expression(std::move(*this));
-        return ScopedPtr<Expression>(ptr);
+        return ScopedPtr<std::remove_reference_t<decltype(*this)>>::New(std::move(*this));
     }
 
     bool Expression::operator==(const Expression& other) const
@@ -303,9 +162,9 @@ namespace Zero
         return r;
     }
 
-    uint64 Expression::GetHash() const
+    HashT Expression::GetHash() const
     {
-        uint64 r = 0;
+        HashT r = 0;
         Visit([&](auto& e) { r = e.GetHash(); });
         return r;
     }
@@ -342,7 +201,7 @@ namespace Zero
         return r.ToPtr();
     }
 
-    uint64 Function::GetHash() const
+    HashT Function::GetHash() const
     {
         auto r = body->GetHash() ^ return_type->GetHash();
         for (auto& e : params)
@@ -392,9 +251,9 @@ namespace Zero
         return std::make_pair<bool, Type>(true, std::move(first));
     }
 
-    uint64 Scope::GetHash() const
+    HashT Scope::GetHash() const
     {
-        uint64 r = 0;
+        HashT r = 0;
         for (auto& e : expressions)
             r ^= e.GetHash();
         return r;
@@ -425,7 +284,7 @@ namespace Zero
         return tr.first ? std::move(tr) : std::move(fr);
     }
 
-    uint64 Branch::GetHash() const
+    HashT Branch::GetHash() const
     {
         return condition->GetHash() ^ on_true->GetHash() ^ on_false->GetHash();
     }
@@ -490,7 +349,7 @@ namespace Zero
         return std::make_pair<bool, Type>(true, std::move(first));
     }
 
-    uint64 Select::GetHash() const
+    HashT Select::GetHash() const
     {
         auto r = key->GetHash() ^ default_case->GetHash();
         for (auto& e : cases)
@@ -513,7 +372,7 @@ namespace Zero
         return body->InferReturnType(parser);
     }
 
-    uint64 While::GetHash() const
+    HashT While::GetHash() const
     {
         return condition->GetHash() ^ body->GetHash();
     }
@@ -533,7 +392,7 @@ namespace Zero
         return body->InferReturnType(parser);
     }
 
-    uint64 DoWhile::GetHash() const
+    HashT DoWhile::GetHash() const
     {
         return condition->GetHash() ^ body->GetHash();
     }
@@ -553,7 +412,7 @@ namespace Zero
         return body->InferReturnType(parser);
     }
 
-    uint64 For::GetHash() const
+    HashT For::GetHash() const
     {
         return
             init->GetHash() ^
@@ -577,7 +436,7 @@ namespace Zero
         return body->InferReturnType(parser);
     }
 
-    uint64 ForEach::GetHash() const
+    HashT ForEach::GetHash() const
     {
         return iterator->GetHash() ^ collection->GetHash() ^ body->GetHash();
     }
@@ -597,9 +456,9 @@ namespace Zero
         abort();
     }
 
-    uint64 UnaryExpression::GetHash() const
+    HashT UnaryExpression::GetHash() const
     {
-        return other->GetHash() ^ WellonsMix((uint64)op);
+        return other->GetHash() ^ WellonsMix((HashT)op);
     }
 
     bool BinaryExpression::operator==(const BinaryExpression& other) const
@@ -617,9 +476,9 @@ namespace Zero
         abort();
     }
 
-    uint64 BinaryExpression::GetHash() const
+    HashT BinaryExpression::GetHash() const
     {
-        return lhs->GetHash() ^ rhs->GetHash() ^ WellonsMix((uint64)op);
+        return lhs->GetHash() ^ rhs->GetHash() ^ WellonsMix((HashT)op);
     }
 
     bool Defer::operator==(const Defer& other) const
@@ -632,7 +491,7 @@ namespace Zero
         return false;
     }
 
-    uint64 Defer::GetHash() const
+    HashT Defer::GetHash() const
     {
         return WellonsMix(body->GetHash());
     }
@@ -655,7 +514,7 @@ namespace Zero
             std::make_pair(true, Type(Void()));
     }
 
-    uint64 Return::GetHash() const
+    HashT Return::GetHash() const
     {
         return WellonsMix(value->GetHash());
     }
@@ -678,7 +537,7 @@ namespace Zero
             std::make_pair(true, Type(Void()));
     }
 
-    uint64 Yield::GetHash() const
+    HashT Yield::GetHash() const
     {
         return WellonsMix(value->GetHash());
     }
@@ -693,7 +552,7 @@ namespace Zero
         return false;
     }
 
-    uint64 Cast::GetHash() const
+    HashT Cast::GetHash() const
     {
         return value->GetHash() ^ new_type->GetHash();
     }
@@ -721,9 +580,7 @@ namespace Zero
 
     ScopedPtr<Type> Type::ToPtr()
     {
-        auto r = type_allocator.New();
-        new (r) Type(std::move(*this));
-        return ScopedPtr<Type>(r);
+        return ScopedPtr<std::remove_reference_t<decltype(*this)>>::New(std::move(*this));
     }
 
     template <typename T>
@@ -738,9 +595,9 @@ namespace Zero
         static constexpr bool Value = true;
     };
 
-    uint64 Type::GetHash() const
+    HashT Type::GetHash() const
     {
-        uint64 r = 0;
+        HashT r = 0;
         Visit([&](auto& e)
         {
             if constexpr (IsScopedPtr<std::remove_reference_t<decltype(e)>>::Value)
@@ -751,57 +608,37 @@ namespace Zero
         return r;
     }
 
-    uint64 NoOp::GetHash() const
+    HashT NoOp::GetHash() const
     {
         constexpr char key[] = __DATE__ "$" __TIME__;
         static const auto h = XXHash64(key, sizeof(key) - 1);
         return h;
     }
 
-    Type UnqualifiedIdentifier::GetType(Parser& parser) const
+    Type Identifier::GetType(Parser& parser) const
     {
         abort();
     }
 
-    uint64 UnqualifiedIdentifier::GetHash() const
+    HashT Identifier::GetHash() const
     {
-        return WellonsMix((uint64)id);
+        return WellonsMix((HashT)id);
     }
 
-    bool UnqualifiedIdentifier::operator==(const UnqualifiedIdentifier& other) const
+    bool Identifier::operator==(const Identifier& other) const
     {
         return id == other.id;
     }
 
-    Type QualifiedIdentifier::GetType(Parser& parser) const
+    HashT Use::GetHash() const
     {
-        abort();
-    }
-
-    bool QualifiedIdentifier::operator==(const QualifiedIdentifier& other) const
-    {
-        if (names.size() != other.names.size())
-            return false;
-        for (uintptr i = 0; i != names.size(); ++i)
-            if (names[i] != other.names[i])
-                return false;
-        return true;
-    }
-
-    uint64 QualifiedIdentifier::GetHash() const
-    {
-        return XXHash64(names.data(), names.size() * sizeof(IdentifierID));
-    }
-
-    uint64 Use::GetHash() const
-    {
-        uint64 r = 0;
+        HashT r = 0;
         for (auto& e : modules)
             r ^= e.GetHash();
         return r;
     }
 
-    uint64 Namespace::GetHash() const
+    HashT Namespace::GetHash() const
     {
         abort();
     }
@@ -811,9 +648,9 @@ namespace Zero
         return Bool();
     }
 
-    uint64 LiteralBool::GetHash() const
+    HashT LiteralBool::GetHash() const
     {
-        return WellonsMix((uint64)value);
+        return WellonsMix((HashT)value);
     }
 
     Type LiteralNil::GetType(Parser& parser) const
@@ -821,9 +658,9 @@ namespace Zero
         return Nil();
     }
 
-    uint64 LiteralNil::GetHash() const
+    HashT LiteralNil::GetHash() const
     {
-        const auto h = WellonsMix(WellonsMix((uint64)(__LINE__)) ^ WellonsMix((uint64)(__COUNTER__)));
+        const auto h = WellonsMix(WellonsMix((HashT)(__LINE__)) ^ WellonsMix((HashT)(__COUNTER__)));
         return h;
     }
 
@@ -832,9 +669,9 @@ namespace Zero
         return Int();
     }
 
-    uint64 LiteralInt::GetHash() const
+    HashT LiteralInt::GetHash() const
     {
-        return WellonsMix((uint64)value);
+        return WellonsMix((HashT)value);
     }
 
     Type LiteralUint::GetType(Parser& parser) const
@@ -842,9 +679,9 @@ namespace Zero
         return UInt();
     }
 
-    uint64 LiteralUint::GetHash() const
+    HashT LiteralUint::GetHash() const
     {
-        return WellonsMix((uint64)value);
+        return WellonsMix((HashT)value);
     }
 
     Type LiteralReal::GetType(Parser& parser) const
@@ -852,27 +689,27 @@ namespace Zero
         return Float();
     }
 
-    uint64 LiteralReal::GetHash() const
+    HashT LiteralReal::GetHash() const
     {
-        uint64 x = 0;
+        HashT x = 0;
         (void)memcpy(&x, &value, sizeof(x));
         return WellonsMix(x);
     }
 
-    uint64 Break::GetHash() const
+    HashT Break::GetHash() const
     {
-        const auto h = WellonsMix(WellonsMix((uint64)(__LINE__)) ^ WellonsMix((uint64)(__COUNTER__)));
+        const auto h = WellonsMix(WellonsMix((HashT)(__LINE__)) ^ WellonsMix((HashT)(__COUNTER__)));
         return h;
     }
 
-    uint64 Continue::GetHash() const
+    HashT Continue::GetHash() const
     {
-        return uint64();
+        return HashT();
     }
 
-    uint64 Wildcard::GetHash() const
+    HashT Wildcard::GetHash() const
     {
-        const auto h = WellonsMix(WellonsMix((uint64)(__LINE__)) ^ WellonsMix((uint64)(__COUNTER__)));
+        const auto h = WellonsMix(WellonsMix((HashT)(__LINE__)) ^ WellonsMix((HashT)(__COUNTER__)));
         return h;
     }
 
@@ -881,7 +718,7 @@ namespace Zero
         return *value == *other.value;
     }
 
-    uint64 TraitsOf::GetHash() const
+    HashT TraitsOf::GetHash() const
     {
         return WellonsMix(value->GetHash());
     }
@@ -891,16 +728,14 @@ namespace Zero
         return size == other.size && type == other.type;
     }
 
-    uint64 Array::GetHash() const
+    HashT Array::GetHash() const
     {
         return WellonsMix(size) ^ type->GetHash();
     }
 
     ScopedPtr<Array> Array::ToPtr()
     {
-        auto p = array_allocator.New();
-        new (p) Array(std::move(*this));
-        return ScopedPtr(p);
+        return ScopedPtr<std::remove_reference_t<decltype(*this)>>::New(std::move(*this));
     }
 
     bool Tuple::operator==(const Tuple& other) const
@@ -913,9 +748,9 @@ namespace Zero
         return true;
     }
 
-    uint64 Tuple::GetHash() const
+    HashT Tuple::GetHash() const
     {
-        uint64 r = 0;
+        HashT r = 0;
         for (auto& e : types)
             r ^= e.GetHash();
         return r;
@@ -923,32 +758,28 @@ namespace Zero
 
     ScopedPtr<Tuple> Tuple::ToPtr()
     {
-        auto p = tuple_allocator.New();
-        new (p) Tuple(std::move(*this));
-        return ScopedPtr(p);
+        return ScopedPtr<std::remove_reference_t<decltype(*this)>>::New(std::move(*this));
     }
 
     bool Record::operator==(const Record& other) const
     {
         if (fields.size() != other.fields.size())
             return false;
-        for (size_t i = 0; i != fields.size(); ++i)
-        {
-            auto& lhs = fields[i];
-            auto& rhs = other.fields[i];
-            if (lhs.name.id != rhs.name.id)
+
+        for (size_t i = 0; i < fields.size(); i++)
+            if (fields[i] != other.fields[i])
                 return false;
-            if (lhs.type != rhs.type)
-                return false;
-            if (lhs.init != rhs.init)
-                return false;
-        }
-        return true;
+        return
+            operators == other.operators &&
+            variables == other.variables &&
+            variables_static == other.variables_static &&
+            functions == other.functions &&
+            functions_static == other.functions_static;
     }
 
-    uint64 Record::GetHash() const
+    HashT Record::GetHash() const
     {
-        uint64 r = 0;
+        HashT r = 0;
         for (auto& e : fields)
             r ^= e.GetHash();
         return r;
@@ -956,9 +787,7 @@ namespace Zero
 
     ScopedPtr<Record> Record::ToPtr()
     {
-        auto p = record_allocator.New();
-        new (p) Record(std::move(*this));
-        return ScopedPtr(p);
+        return ScopedPtr<std::remove_reference_t<decltype(*this)>>::New(std::move(*this));
     }
 
     bool Enum::operator==(const Enum& other) const
@@ -976,57 +805,55 @@ namespace Zero
         return true;
     }
 
-    uint64 Enum::GetHash() const
+    HashT Enum::GetHash() const
     {
-        uint64 r = 0;
+        HashT r = 0;
         r ^= underlying_type->GetHash();
         for (auto& e : values)
-            r ^= WellonsMix((uint64)e.first) ^ e.second.GetHash();
+            r ^= WellonsMix((HashT)e.first) ^ e.second.GetHash();
         return r;
     }
 
     ScopedPtr<Enum> Enum::ToPtr()
     {
-        auto p = enum_allocator.New();
-        new (p) Enum(std::move(*this));
-        return ScopedPtr(p);
+        return ScopedPtr<std::remove_reference_t<decltype(*this)>>::New(std::move(*this));
     }
 
-    uint64 Void::GetHash()
+    HashT Void::GetHash()
     {
-        const auto h = WellonsMix(WellonsMix((uint64)(__LINE__)) ^ WellonsMix((uint64)(__COUNTER__)));
+        const auto h = WellonsMix(WellonsMix((HashT)(__LINE__)) ^ WellonsMix((HashT)(__COUNTER__)));
         return h;
     }
 
-    uint64 Nil::GetHash()
+    HashT Nil::GetHash()
     {
-        const auto h = WellonsMix(WellonsMix((uint64)(__LINE__)) ^ WellonsMix((uint64)(__COUNTER__)));
+        const auto h = WellonsMix(WellonsMix((HashT)(__LINE__)) ^ WellonsMix((HashT)(__COUNTER__)));
         return h;
     }
 
-    uint64 Bool::GetHash()
+    HashT Bool::GetHash()
     {
-        const auto h = WellonsMix(WellonsMix((uint64)(__LINE__)) ^ WellonsMix((uint64)(__COUNTER__)));
+        const auto h = WellonsMix(WellonsMix((HashT)(__LINE__)) ^ WellonsMix((HashT)(__COUNTER__)));
         return h;
     }
 
-    uint64 Int::GetHash() const
+    HashT Int::GetHash() const
     {
-        const auto h = WellonsMix(WellonsMix((uint64)(__LINE__)) ^ WellonsMix((uint64)(__COUNTER__)));
+        const auto h = WellonsMix(WellonsMix((HashT)(__LINE__)) ^ WellonsMix((HashT)(__COUNTER__)));
         const auto h2 = WellonsMix(DefaultBitWidth);
         return h ^ (bits == DefaultBitWidth ? h2 : WellonsMix(bits));
     }
 
-    uint64 UInt::GetHash() const
+    HashT UInt::GetHash() const
     {
-        const auto h = WellonsMix(WellonsMix((uint64)(__LINE__)) ^ WellonsMix((uint64)(__COUNTER__)));
+        const auto h = WellonsMix(WellonsMix((HashT)(__LINE__)) ^ WellonsMix((HashT)(__COUNTER__)));
         const auto h2 = WellonsMix(DefaultBitWidth);
         return h ^ (bits == DefaultBitWidth ? h2 : WellonsMix(bits));
     }
 
-    uint64 Float::GetHash() const
+    HashT Float::GetHash() const
     {
-        const auto h = WellonsMix((uint64)(__LINE__)) ^ WellonsMix((uint64)(__COUNTER__));
+        const auto h = WellonsMix((HashT)(__LINE__)) ^ WellonsMix((HashT)(__COUNTER__));
         const auto h2 = WellonsMix(DefaultBitWidth);
         return h ^ (bits == DefaultBitWidth ? h2 : WellonsMix(bits));
     }
@@ -1046,9 +873,9 @@ namespace Zero
         return object->GetType(parser);
     }
 
-    uint64 ConstructorCall::GetHash() const
+    HashT ConstructorCall::GetHash() const
     {
-        uint64 r = 0;
+        HashT r = 0;
         for (auto& e : parameters)
             r ^= e.GetHash();
         return r;
@@ -1059,7 +886,7 @@ namespace Zero
         return *object == *other.object;
     }
 
-    uint64 DestructorCall::GetHash() const
+    HashT DestructorCall::GetHash() const
     {
         return WellonsMix(object->GetHash());
     }
@@ -1091,7 +918,7 @@ namespace Zero
         abort();
     }
 
-    uint64 FunctionCall::GetHash() const
+    HashT FunctionCall::GetHash() const
     {
         auto r = callable->GetHash();
         for (auto& e : params)
@@ -1109,7 +936,7 @@ namespace Zero
         return true;
     }
 
-    uint64 FunctionType::GetHash() const
+    HashT FunctionType::GetHash() const
     {
         auto r = return_type->GetHash();
         for (auto& e : param_types)
@@ -1119,14 +946,62 @@ namespace Zero
 
     ScopedPtr<FunctionType> FunctionType::ToPtr()
     {
-        auto r = function_type_allocator.New();
-        new (r) FunctionType(std::move(*this));
-        return ScopedPtr<FunctionType>(r);
+        return ScopedPtr<std::remove_reference_t<decltype(*this)>>::New(std::move(*this));
     }
     
-    uint64 MetaType::GetHash()
+    HashT MetaType::GetHash()
     {
-        const auto h = WellonsMix(WellonsMix((uint64)(__LINE__)) ^ WellonsMix((uint64)(__COUNTER__)));
+        const auto h = WellonsMix(WellonsMix((HashT)(__LINE__)) ^ WellonsMix((HashT)(__COUNTER__)));
         return h;
+    }
+
+    bool Union::operator==(const Union& other) const
+    {
+        if (fields.size() != other.fields.size())
+            return false;
+        for (size_t i = 0; i < fields.size(); i++)
+            if (fields[i] != other.fields[i])
+                return false;
+        return
+            operators == other.operators &&
+            variables == other.variables &&
+            variables_static == other.variables_static &&
+            functions == other.functions &&
+            functions_static == other.functions_static;
+    }
+
+    HashT Union::GetHash() const
+    {
+        HashT h = 0;
+        for (auto& e : fields)
+            h ^= e.GetHash();
+        return h;
+    }
+
+    ScopedPtr<Union> Union::ToPtr()
+    {
+        return ScopedPtr<std::remove_reference_t<decltype(*this)>>::New(std::move(*this));
+    }
+
+    bool Variant::operator==(const Variant& other) const
+    {
+        if (types.size() != other.types.size())
+            return false;
+
+        for (size_t i = 0; i < types.size(); i++)
+            if (types[i] != other.types[i])
+                return false;
+
+        return key == other.key;
+    }
+    
+    HashT Variant::GetHash() const
+    {
+        return 0;
+    }
+
+    ScopedPtr<Variant> Variant::ToPtr()
+    {
+        return ScopedPtr<std::remove_reference_t<decltype(*this)>>::New(std::move(*this));
     }
 }

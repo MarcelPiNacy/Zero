@@ -55,7 +55,7 @@ namespace Zero
 
 	void Tokenizer::SkipIdentifier()
 	{
-		while (cursor < end && (isalnum(*cursor) || *cursor == '_' || *cursor == '.'))
+		while (cursor < end && (isalnum(*cursor) || *cursor == '_'))
 			++cursor;
 	}
 
@@ -177,12 +177,20 @@ namespace Zero
 			else
 				out = Operator::CompareGT;
 			return TokenType::Operator;
+		case '!':
+			if (TryGet('='))
+				out = Operator::BoolNot;
+			else
+				out = Operator::CompareNE;
+			return TokenType::Operator;
 		case '?':
 			return TokenType::TraitsOf;
 		case '$':
 			return TokenType::Wildcard;
 		case '@':
 			return TokenType::Address;
+		case '#':
+			return TokenType::Hash;
 		case '\'':
 		{
 			auto b = cursor;
@@ -240,16 +248,14 @@ namespace Zero
 		case '}':
 			return TokenType::BraceRight;
 		case '.':
-			return TokenType::Dot;
+			out = Operator::MemberAccess;
+			return TokenType::Operator;
 		case ':':
 			return TokenType::Colon;
 		case ',':
 			return TokenType::Comma;
 		case ';':
-			if (TryGet(';'))
-				return TokenType::NoOp;
-			else
-				return TokenType::Semicolon;
+			return TokenType::Semicolon;
 		default:
 			return TokenType::MaxEnum;
 		}
@@ -289,7 +295,7 @@ namespace Zero
 		if (token.size() >= 256)
 			abort();
 		(void)memcpy(buffer, token.data(), token.size());
-		out = (int64)strtoull(buffer, nullptr, radix);
+		out = (uint64)strtoull(buffer, nullptr, radix);
 		return TokenType::LiteralInt;
 	}
 
@@ -332,7 +338,7 @@ namespace Zero
 			}
 			else
 			{
-				out = (int64)strtoull(buffer, nullptr, 10);
+				out = (uint64)strtoull(buffer, nullptr, 10);
 				return TokenType::LiteralInt;
 			}
 		}
